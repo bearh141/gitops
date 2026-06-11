@@ -3,6 +3,10 @@ const os = require('os');
 const crypto = require('crypto');
 
 const port = Number(process.env.PORT || 3000);
+let totalRequests = 0;
+let orderRequests = 0;
+let healthRequests = 0;
+let metricsRequests = 0;
 
 function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, {
@@ -41,8 +45,10 @@ function buildOrderResponse(url) {
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  totalRequests += 1;
 
   if (url.pathname === '/api/health') {
+    healthRequests += 1;
     return sendJson(res, 200, {
       status: 'ok',
       service: 'gitops-demo-backend',
@@ -51,7 +57,26 @@ const server = http.createServer((req, res) => {
   }
 
   if (url.pathname === '/api/order') {
+    orderRequests += 1;
     return sendJson(res, 200, buildOrderResponse(url));
+  }
+
+  if (url.pathname === '/metrics') {
+    metricsRequests += 1;
+    res.writeHead(200, {
+      'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
+      'Cache-Control': 'no-store'
+    });
+    return res.end(`# HELP gitops_demo_requests_total Total HTTP requests handled by the backend.
+# TYPE gitops_demo_requests_total counter
+gitops_demo_requests_total{route="all"} ${totalRequests}
+gitops_demo_requests_total{route="/api/order"} ${orderRequests}
+gitops_demo_requests_total{route="/api/health"} ${healthRequests}
+gitops_demo_requests_total{route="/metrics"} ${metricsRequests}
+# HELP gitops_demo_build_info Backend build information.
+# TYPE gitops_demo_build_info gauge
+gitops_demo_build_info{service="gitops-demo-backend",version="v1.0.0",hostname="${os.hostname()}"} 1
+`);
   }
 
   return sendJson(res, 404, {

@@ -33,6 +33,8 @@ kind: Service
 metadata:
   name: backend
   namespace: demo
+  labels:
+    app: backend
   annotations:
     argocd.argoproj.io/sync-wave: "2"
 spec:
@@ -43,8 +45,8 @@ spec:
       port: 3000
       targetPort: 3000
 ---
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
 metadata:
   name: frontend
   namespace: demo
@@ -52,6 +54,14 @@ metadata:
     argocd.argoproj.io/sync-wave: "3"
 spec:
   replicas: 2
+  strategy:
+    canary:
+      steps:
+        - setWeight: 25
+        - pause: {}
+        - setWeight: 50
+        - pause: { duration: 60s }
+        - setWeight: 100
   selector:
     matchLabels:
       app: frontend
@@ -81,3 +91,24 @@ spec:
     - name: http
       port: 80
       targetPort: 80
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: backend
+  namespace: demo
+  labels:
+    release: kube-prometheus-stack
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  namespaceSelector:
+    matchNames:
+      - demo
+  selector:
+    matchLabels:
+      app: backend
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
