@@ -1,17 +1,82 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: web-config
+  name: frontend-config
   namespace: demo
   annotations:
     argocd.argoproj.io/sync-wave: "0"
 data:
-  MESSAGE: "hello from gitops ci"
+  index.html: |
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>GitOps Frontend Backend Demo</title>
+      <style>
+        body {
+          margin: 0;
+          font-family: Arial, sans-serif;
+          background: #f5f7fb;
+          color: #172033;
+        }
+        main {
+          max-width: 880px;
+          margin: 56px auto;
+          padding: 28px;
+          background: white;
+          border: 1px solid #d9e2ef;
+        }
+        h1 {
+          margin-top: 0;
+          color: #0f3b66;
+        }
+        .result {
+          margin-top: 18px;
+          padding: 16px;
+          background: #edf7f1;
+          border-left: 4px solid #22c55e;
+          font-family: Consolas, monospace;
+        }
+      </style>
+    </head>
+    <body>
+      <main>
+        <h1>W9 GitOps Demo</h1>
+        <p>This page is served by the frontend Deployment.</p>
+        <p>The message below is fetched from the backend Service through Nginx reverse proxy.</p>
+        <div class="result" id="result">Loading backend response...</div>
+      </main>
+      <script>
+        fetch('/api')
+          .then((response) => response.text())
+          .then((text) => {
+            document.getElementById('result').textContent = text;
+          })
+          .catch((error) => {
+            document.getElementById('result').textContent = 'Backend call failed: ' + error;
+          });
+      </script>
+    </body>
+    </html>
+  default.conf: |
+    server {
+      listen 80;
+
+      location / {
+        root /usr/share/nginx/html;
+        index index.html;
+      }
+
+      location /api {
+        proxy_pass http://backend:5678;
+      }
+    }
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: web
+  name: backend
   namespace: demo
   annotations:
     argocd.argoproj.io/sync-wave: "1"
@@ -19,31 +84,81 @@ spec:
   replicas: 2
   selector:
     matchLabels:
-      app: web
+      app: backend
   template:
     metadata:
       labels:
-        app: web
+        app: backend
     spec:
       containers:
-        - name: web
-          image: nginx:1.27
+        - name: backend
+          image: hashicorp/http-echo:1.0
+          args:
+            - "-listen=:5678"
+            - "-text=Hello from backend via GitOps"
           ports:
-            - containerPort: 80
-          envFrom:
-            - configMapRef:
-                name: web-config
+            - containerPort: 5678
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: web
+  name: backend
   namespace: demo
   annotations:
     argocd.argoproj.io/sync-wave: "2"
 spec:
   selector:
-    app: web
+    app: backend
   ports:
-    - port: 80
+    - name: http
+      port: 5678
+      targetPort: 5678
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: demo
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: nginx:1.27
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: frontend-config
+              mountPath: /usr/share/nginx/html/index.html
+              subPath: index.html
+            - name: frontend-config
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+      volumes:
+        - name: frontend-config
+          configMap:
+            name: frontend-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: demo
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  selector:
+    app: frontend
+  ports:
+    - name: http
+      port: 80
       targetPort: 80
