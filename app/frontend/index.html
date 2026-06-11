@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>W9 GitOps Frontend Backend Demo</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f5f7fb;
+      color: #172033;
+    }
+    main {
+      max-width: 880px;
+      margin: 56px auto;
+      padding: 28px;
+      background: white;
+      border: 1px solid #d9e2ef;
+    }
+    h1 {
+      margin-top: 0;
+      color: #0f3b66;
+    }
+    form {
+      display: flex;
+      gap: 10px;
+      margin-top: 18px;
+    }
+    input {
+      flex: 1;
+      padding: 12px;
+      border: 1px solid #cbd5e1;
+      font-size: 16px;
+    }
+    button {
+      padding: 12px 18px;
+      border: 0;
+      background: #0f3b66;
+      color: white;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .result {
+      margin-top: 18px;
+      padding: 16px;
+      background: #edf7f1;
+      border-left: 4px solid #22c55e;
+      font-family: Consolas, monospace;
+      white-space: pre-wrap;
+      min-height: 120px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>W9 GitOps Demo</h1>
+    <p>This frontend is served by Nginx.</p>
+    <p>Type your name and click the button. The frontend will call the backend API through the Kubernetes Service.</p>
+
+    <form id="hello-form">
+      <input id="name-input" value="DHoang" placeholder="Enter your name">
+      <button type="submit">Call backend</button>
+    </form>
+
+    <div class="result" id="result">Backend response will appear here.</div>
+  </main>
+
+  <script>
+    const form = document.getElementById('hello-form');
+    const input = document.getElementById('name-input');
+    const result = document.getElementById('result');
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const name = encodeURIComponent(input.value || 'anonymous');
+      result.textContent = 'Calling backend...';
+
+      try {
+        const response = await fetch('/api/hello?name=' + name + '&from=frontend');
+        const data = await response.json();
+        result.textContent = [
+          'Backend handled the request successfully.',
+          '',
+          'Message: ' + data.message,
+          'Backend service: ' + data.service,
+          'Backend pod hostname: ' + data.hostname,
+          'Timestamp: ' + data.timestamp,
+          '',
+          'Raw JSON:',
+          JSON.stringify(data, null, 2)
+        ].join('\n');
+      } catch (error) {
+        result.textContent = 'Backend call failed: ' + error;
+      }
+    });
+  </script>
+</body>
+</html>
