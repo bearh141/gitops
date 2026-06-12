@@ -36,6 +36,8 @@ spec:
               value: "0"
             - name: VERSION
               value: "v2"
+            - name: RETRY_ID
+              value: "1"
           readinessProbe:
             httpGet:
               path: /healthz
