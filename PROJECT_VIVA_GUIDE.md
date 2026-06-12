@@ -57,9 +57,13 @@ Trong vấn đáp, khi giảng viên yêu cầu **"Em hãy trình bày tổng qu
       namespace: argocd             # Nơi lưu trữ tài nguyên Application con
     syncPolicy:
       automated:                    # Tự động đồng bộ
-        prune: true                 # Nếu trên Git xóa file, trên K8s sẽ tự động xóa theo
-        selfHeal: true              # Nếu ai sửa tay trên K8s, ArgoCD sẽ tự động ghi đè về giống Git
+        prune: true                 # Nếu trên Git xóa file, trên K8s sẽ tự động xóa theo (Auto Pruning)
+        selfHeal: true              # Nếu ai sửa tay trên K8s, ArgoCD sẽ tự động ghi đè về giống Git (Self Healing)
   ```
+
+* **Phân tích kỹ khối `syncPolicy`:**
+  * **`prune: true`**: Khi bạn xóa một file manifest khỏi thư mục Git, ArgoCD phát hiện nó không còn trong Git nữa và sẽ tự động ra lệnh xóa tài nguyên tương ứng trên Kubernetes cluster. Nếu thiếu, tài nguyên cũ bị xóa trên Git vẫn sẽ tồn tại mãi trên cụm.
+  * **`selfHeal: true`**: Cơ chế chống sửa tay (Drift Detection). Nếu ai đó dùng lệnh `kubectl edit` sửa cấu hình trực tiếp trên cụm, ArgoCD sẽ ngay lập tức phát hiện sự sai lệch và ghi đè lại cấu hình ban đầu từ Git trong vài giây.
 
 ---
 
@@ -92,7 +96,7 @@ File này khai báo cho ArgoCD biết ứng dụng `api` (chứa canary rollout)
 
 ---
 
-### 3. File Cấu Hình Rollout & Service: `k8s-api/api.yaml`
+### 3. File Cấu Hìng Rollout & Service: `k8s-api/api.yaml`
 Đây là trung tâm của bài chiều. File này định nghĩa cách triển khai pod ứng dụng `api` sử dụng chiến lược **Canary** thay vì Deployment thông thường.
 
 * **Block 1: Trình điều khiển Rollout (Dòng 1 - 53)**
@@ -142,14 +146,18 @@ File này khai báo cho ArgoCD biết ứng dụng `api` (chứa canary rollout)
           templates:
             - templateName: api-success-rate # Chạy phân tích liên tục sử dụng AnalysisTemplate này
         steps:
-          - setWeight: 25           # Bước 1: Chuyển 25% traffic sang pod phiên bản mới
+          - setWeight: 25           # Bước 1: Mở 25% traffic cho bản mới (v3), 75% vẫn chạy bản cũ (v2)
           - pause:
-              duration: 1m          # Bước 2: Tạm dừng 1 phút để chạy Analysis kiểm tra sức khỏe
-          - setWeight: 50           # Bước 3: Nếu đạt, nâng lên 50% traffic
+              duration: 1m          # Bước 2: Dừng lại 1 phút để chạy Analysis kiểm tra sức khỏe
+          - setWeight: 50           # Bước 3: Nếu đạt, nâng lên 50% traffic cho bản mới
           - pause:
-              duration: 1m          # Bước 4: Tạm dừng 1 phút để kiểm tra tiếp
+              duration: 1m          # Bước 4: Tiếp tục dừng 1 phút để kiểm tra tiếp
           - setWeight: 100          # Bước 5: Nếu tất cả đều đạt, chuyển 100% traffic và hoàn tất
   ```
+
+* **Phân tích kỹ chiến lược Canary:**
+  * **`analysis`**: Liên kết đợt cập nhật này với một **AnalysisTemplate** chạy ngầm (Background Analysis). Nghĩa là ngay khi bắt đầu bước đầu tiên (`setWeight: 25`), Argo Rollouts sẽ tạo ra một tài nguyên thực thi gọi là `AnalysisRun` để liên tục truy vấn Prometheus để đo đạc chất lượng của các pod mới.
+  * **`steps`**: Quy trình triển khai. Nếu bất kỳ lúc nào trong các khoảng thời gian dừng (`pause`) mà `AnalysisRun` phát hiện tỉ lệ lỗi vượt ngưỡng, quá trình chạy các bước này sẽ lập tức dừng lại và kích hoạt **Auto-Abort** (tự động rollback về bản cũ).
 
 * **Block 2: Service K8s (Dòng 55 - 71)**
   ```yaml
@@ -174,7 +182,7 @@ File này khai báo cho ArgoCD biết ứng dụng `api` (chứa canary rollout)
 ### 4. File Phân Tích Chỉ Số Canary: `k8s-api/analysis.yaml`
 Tệp này định nghĩa cách thức hệ thống tự động kiểm tra xem phiên bản mới có đạt chất lượng hay không bằng cách gửi truy vấn trực tiếp đến Prometheus.
 
-* **Chi tiết chi tiết cấu hình:**
+* **Chi tiết cấu hình:**
   ```yaml
   apiVersion: argoproj.io/v1alpha1
   kind: AnalysisTemplate            # Resource quy định mẫu phân tích
@@ -196,13 +204,16 @@ Tệp này định nghĩa cách thức hệ thống tự động kiểm tra xem 
               (sum(rate(flask_http_request_total{namespace="demo"}[2m])) or vector(1))
   ```
 
-* **Giải thích chi tiết câu lệnh PromQL trong Analysis:**
-  * `flask_http_request_total`: Metric đếm tổng request của app Flask.
-  * `{namespace="demo", status!~"5.."}`: Chỉ lọc các request thuộc namespace `demo` và có HTTP status **không phải** `5xx` (tức là loại bỏ các lỗi Server Error 500 để lấy số request thành công).
-  * `rate(...[2m])`: Tính toán tốc độ request trung bình trong cửa sổ trượt 2 phút.
-  * `sum(...)`: Cộng gộp chỉ số từ tất cả các pod đang chạy.
-  * `or vector(1)`: Nếu hệ thống chưa có request nào (rate = 0), Prometheus sẽ trả về giá trị mặc định là `1` (tương đương 100% thành công) để tránh lỗi không chia được cho 0.
-  * Phép chia `/`: Chia số request thành công cho tổng số request để tính ra tỉ lệ thành công (từ 0.0 đến 1.0).
+* **Phân tích kỹ các tham số trong Analysis Metric:**
+  * **`successCondition: result[0] >= 0.95`**: `result[0]` là giá trị số thực trả về từ câu lệnh PromQL. Giá trị này nằm trong khoảng từ `0.0` (0%) đến `1.0` (100%). Nếu kết quả trả về `< 0.95` (tức là tỷ lệ thành công dưới 95% do có lỗi `5xx`), lần kiểm tra đó sẽ bị đánh dấu là **Failed**.
+  * **`failureLimit: 3`**: Cho phép đo hỏng tối đa 3 lần. Việc này giúp tránh trường hợp hệ thống bị lag nhất thời làm tụt chỉ số trong vài giây rồi phục hồi. Nhưng nếu đo hỏng liên tiếp 4 lần, hệ thống sẽ kết luận bản mới không an toàn và tự hủy.
+  * **Giải thích chi tiết câu lệnh PromQL trong Analysis:**
+    * `flask_http_request_total`: Metric đếm tổng request của app Flask.
+    * `{namespace="demo", status!~"5.."}`: Chỉ lọc các request thuộc namespace `demo` và có HTTP status **không phải** `5xx` (tức là loại bỏ các lỗi Server Error 500 để lấy số request thành công).
+    * `rate(...[2m])`: Tính toán tốc độ request trung bình trong cửa sổ thời gian trượt (sliding window) dài 2 phút.
+    * `sum(...)`: Cộng gộp chỉ số từ tất cả các pod đang chạy.
+    * `or vector(1)`: Nếu hệ thống chưa có request nào (rate = 0), Prometheus sẽ trả về giá trị mặc định là `1` (tương đương 100% thành công) để tránh lỗi không chia được cho 0.
+    * Phép chia `/`: Chia số request thành công cho tổng số request để tính ra tỉ lệ thành công (từ 0.0 đến 1.0).
 
 ---
 
@@ -237,11 +248,14 @@ Tệp này định nghĩa cảnh báo khi tỷ lệ lỗi vượt quá mức cho
               description: "More than 5% of API requests are failing in the demo namespace."
   ```
 
-* **Giải thích chi tiết câu lệnh PromQL trong PrometheusRule:**
-  * `status=~"5.."`: Chỉ lấy các request bị lỗi `5xx`.
-  * `increase(...[1m])`: Lấy số lượng request tăng thêm trong vòng 1 phút qua.
-  * `clamp_min(..., 1)`: Hàm này giới hạn giá trị tối thiểu của mẫu số là `1`, ngăn cản lỗi chia cho 0 khi không có traffic.
-  * Toán tử so sánh `> 0.05`: Trả về kết quả (để bắn alert) nếu tỷ lệ lỗi lớn hơn 5%.
+* **Phân tích kỹ các tham số trong Alerting Rule:**
+  * **`expr: (...) > 0.05`**: Prometheus sẽ liên tục đánh giá biểu thức này. Nếu tỷ lệ lỗi tính ra lớn hơn `0.05` (5%), biểu thức này trả về kết quả `true`.
+  * **`for: 10s`**: Thời gian chờ. Khi biểu thức trả về `true`, Alert sẽ chuyển sang trạng thái **`PENDING`** (Đang chờ). Nếu lỗi vẫn duy trì liên tục đủ 10 giây, Alert mới chính thức chuyển sang trạng thái **`FIRING`** (Đang báo động) để kích hoạt email. Nếu lỗi tự hết trước 10 giây (ví dụ do Canary tự hủy nhanh), alert sẽ biến mất và không làm phiền người quản trị.
+  * **Giải thích chi tiết câu lệnh PromQL trong PrometheusRule:**
+    * `status=~"5.."`: Chỉ lấy các request bị lỗi `5xx`.
+    * `increase(...[1m])`: Lấy số lượng request tăng thêm trong vòng 1 phút qua.
+    * `clamp_min(..., 1)`: Hàm này giới hạn giá trị tối thiểu của mẫu số là `1`, ngăn cản lỗi chia cho 0 khi không có traffic.
+    * Toán tử so sánh `> 0.05`: Trả về kết quả (để bắn alert) nếu tỷ lệ lỗi lớn hơn 5%.
 
 ---
 
@@ -271,6 +285,10 @@ ServiceMonitor là cấu hình khai báo giúp Prometheus tự động phát hi�
         path: /metrics              # Đường dẫn endpoint lấy metrics của Flask
         interval: 15s               # Cứ mỗi 15 giây Prometheus sẽ kéo dữ liệu một lần
   ```
+
+* **Phân tích kỹ các tham số trong ServiceMonitor:**
+  * **`matchLabels: { app: api }`**: Đây là bộ lọc. Prometheus sẽ tìm kiếm trong namespace `demo` xem có Service nào khai báo label `app: api` trong phần `metadata.labels` hay không. Nếu trùng khớp, nó mới tiến hành thu thập.
+  * **`port: http`**: Prometheus không kết nối trực tiếp vào số cổng (ví dụ: 8080) mà kết nối dựa trên **tên cổng (port name)** được khai báo trong tệp tin Service. Nếu đặt tên cổng không trùng khớp, Prometheus sẽ không thể tìm thấy endpoints.
 
 ---
 
