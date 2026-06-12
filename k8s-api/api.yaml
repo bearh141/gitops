@@ -33,7 +33,7 @@ spec:
               containerPort: 8080
           env:
             - name: ERROR_RATE
-              value: "0.1"
+              value: "0.4"
             - name: VERSION
               value: "v3"
           readinessProbe:
