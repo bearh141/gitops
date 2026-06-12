@@ -141,6 +141,4 @@ We define a Prometheus alerting rule to notify operators if the error rate of th
 All validation screenshots confirming the success criteria are stored in the [evidence/](evidence/) directory and detailed in the [EVIDENCE.md](EVIDENCE.md) report.
 
 * **[EVIDENCE.md](EVIDENCE.md)**: Full verification checklist with screenshot references.
-* **[evidence/01-argocd-synced-healthy.png](evidence/01-argocd-synced-healthy.png)**: Proof of ArgoCD clean sync state.
-* **[evidence/02-canary-auto-abort-1.png](evidence/02-canary-auto-abort-1.png)**: Terminal description showing active rollback during a failed canary update.
-* **[evidence/12a-email-alert-received.png](evidence/12a-email-alert-received.png)**: Proof of email notifications received for the SLO breach.
+
