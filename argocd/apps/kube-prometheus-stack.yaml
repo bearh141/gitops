@@ -38,6 +38,7 @@ spec:
               group_interval: 1m
               repeat_interval: 30m
             receivers:
+              - name: "null"
               - name: personal-email
                 email_configs:
                   - to: groupshytpm3@gmail.com
