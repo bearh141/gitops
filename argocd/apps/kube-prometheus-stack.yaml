@@ -41,7 +41,7 @@ spec:
               - name: "null"
               - name: personal-email
                 email_configs:
-                  - to: groupshytpm3@gmail.com
+                  - to: dhoang1401@gmail.com
                     send_resolved: true
         grafana:
           adminPassword: admin123
