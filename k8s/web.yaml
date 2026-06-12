@@ -16,9 +16,9 @@ spec:
         prometheus:
           address: http://kube-prometheus-stack-prometheus.monitoring.svc:9090
           query: |
-            sum(increase(gitops_demo_http_requests_total{namespace="demo",route="/api/order",status=~"5.."}[1m]))
+            (sum(increase(gitops_demo_http_requests_total{namespace="demo",route="/api/order",status=~"5.."}[1m])) or vector(0))
             /
-            clamp_min(sum(increase(gitops_demo_http_requests_total{namespace="demo",route="/api/order"}[1m])), 1)
+            clamp_min((sum(increase(gitops_demo_http_requests_total{namespace="demo",route="/api/order"}[1m])) or vector(0)), 1)
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
@@ -36,9 +36,9 @@ spec:
         - alert: BackendHighErrorRate
           expr: |
             (
-              sum(increase(gitops_demo_http_requests_total{namespace="demo",route="/api/order",status=~"5.."}[1m]))
+              (sum(increase(gitops_demo_http_requests_total{namespace="demo",route="/api/order",status=~"5.."}[1m])) or vector(0))
               /
-              clamp_min(sum(increase(gitops_demo_http_requests_total{namespace="demo",route="/api/order"}[1m])), 1)
+              clamp_min((sum(increase(gitops_demo_http_requests_total{namespace="demo",route="/api/order"}[1m])) or vector(0)), 1)
             ) > 0.05
           for: 1m
           labels:
@@ -84,7 +84,7 @@ spec:
             - containerPort: 3000
           env:
             - name: VERSION
-              value: "v1.1.0"
+              value: "v1.2.0"
             - name: ERROR_RATE
               value: "0"
           readinessProbe:
