@@ -1,0 +1,24 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: api-slo-alerts
+  namespace: demo
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: api-slo
+      rules:
+        - alert: BackendHighErrorRate
+          expr: |
+            (
+              (sum(increase(flask_http_request_total{namespace="demo", status=~"5.."}[1m])) or vector(0))
+              /
+              clamp_min((sum(increase(flask_http_request_total{namespace="demo"}[1m])) or vector(0)), 1)
+            ) > 0.05
+          for: 10s
+          labels:
+            severity: warning
+          annotations:
+            summary: "API error rate is above SLO"
+            description: "More than 5% of API requests are failing in the demo namespace."
