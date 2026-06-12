@@ -1,82 +1,146 @@
-# Hướng dẫn & Tài liệu Minh chứng (Evidence) - Tuần 9 Challenge
+# GitOps, Observability & Progressive Delivery (Argo Rollouts Canary)
 
-Dự án này là bài nộp tích hợp bài lab sáng (ứng dụng `web` frontend/backend) và bài lab chiều/challenge (Canary Auto-Abort & SLO Alerting cho ứng dụng `api`).
+This repository contains a unified GitOps project integrating the Morning Web Application and the Afternoon API Canary/Observability Challenge for the Week 9 Lab.
 
 ---
 
-## 1. Giải thích Prometheus Query & Ngưỡng (Metrics & Thresholds)
+## 1. Overview & Architecture
 
-### 1.1. Canary Analysis Template (`api-success-rate`)
-Để tự động đánh giá sức khỏe của phiên bản mới (`Canary`) trong quá trình rollout, ta sử dụng một `AnalysisTemplate` đo tỷ lệ yêu cầu thành công (Success Rate).
+The project demonstrates a complete automated deployment pipeline using **GitOps**, continuous feedback via **Observability (SLO Alerting)**, and **Progressive Delivery (Canary Deployments)** with auto-rollback.
 
-* **Prometheus Query**:
+```
+                  +--------------------------------+
+                  |           GitHub Repo          |
+                  +---------------+----------------+
+                                  |
+                                  v
+                  +---------------+----------------+
+                  |            ArgoCD              |
+                  +---------------+----------------+
+                                  | (Auto-Sync)
+                                  v
+                  +---------------+----------------+
+                  |       Kubernetes Cluster       |
+                  +---------------+----------------+
+                                  |
+            +---------------------+---------------------+
+            | (Morning App)                             | (Afternoon App)
+            v                                           v
++-----------+-----------+                   +-----------+-----------+
+|          web          |                   |          api          |
+|  Frontend & Backend   |                   |   Flask App (v2/v3)   |
++-----------+-----------+                   +-----------+-----------+
+            |                                           |
+            | (Exposes metrics)                         | (Exposes metrics)
+            v                                           v
++-----------+-------------------------------------------+-----------+
+|                        Prometheus & Grafana                       |
++-----------+-------------------------------------------+-----------+
+            |                                           |
+            | (Triggers Alert on SLO breach)            | (Validates Canary health)
+            v                                           v
++-----------+-----------+                   +-----------+-----------+
+|     Alertmanager      |                   |     Argo Rollouts     |
+|   (Sends Email Alert) |                   |    (Auto-Abort/Roll)  |
++-----------------------+                   +-----------------------+
+```
+
+### Key Components:
+1. **Morning App (`web`)**: A multi-tier web application consisting of a React frontend and a Node.js backend.
+2. **Afternoon App (`api`)**: A Flask-based API service packaged using Docker, exposing custom Prometheus metrics (request totals and status codes).
+3. **Monitoring Stack**: Installed via `kube-prometheus-stack` to collect metrics, query HTTP request rates, and handle alerting rules.
+4. **Progressive Delivery**: Managed by `argo-rollouts` to orchestrate canary rollout steps, evaluate performance metrics during update stages, and abort/rollback automatically on failure.
+
+---
+
+## 2. Directory Structure
+
+```text
+.
+├── .github/workflows/    # CI workflows (YAML validation)
+├── app/                  # Application source code
+│   ├── backend/          # Node.js backend source code
+│   ├── frontend/         # React frontend source code
+│   ├── Dockerfile        # Dockerfile for the Flask API app
+│   └── app.py            # Python Flask API code exposing metrics
+├── argocd/               # ArgoCD Application manifests (App-of-Apps pattern)
+│   ├── apps/             # Child applications (web, api, monitoring, rollouts)
+│   └── root.yaml         # Root Application managing all child apps
+├── k8s/                  # Kubernetes manifests for the Morning web app
+├── k8s-api/              # Kubernetes manifests for the Afternoon api app
+│   ├── api.yaml          # Rollout (Canary strategy) & Service
+│   ├── analysis.yaml     # AnalysisTemplate for success rate evaluation
+│   ├── prometheusrule.yaml # PrometheusRule SLO alerts definition
+│   └── servicemonitor.yaml # ServiceMonitor for scraping API metrics
+├── evidence/             # Screenshots folder verifying the lab requirements
+├── EVIDENCE.md           # Markdown report index pointing to all evidence screenshots
+└── README.md             # Standard project documentation (this file)
+```
+
+---
+
+## 3. Metrics, SLOs & Alerting Configuration
+
+We implement automated feedback loops using Prometheus queries to measure service level indicators (SLIs) and enforce service level objectives (SLOs).
+
+### 3.1. Canary Analysis Template (`api-success-rate`)
+During a rollout, the `AnalysisTemplate` checks the Canary success rate every **30 seconds** using the following query:
+* **Query**:
   ```promql
   (sum(rate(flask_http_request_total{namespace="demo", status!~"5.."}[2m])) or vector(1))
   /
   (sum(rate(flask_http_request_total{namespace="demo"}[2m])) or vector(1))
   ```
-* **Ý nghĩa query**:
-  * Tử số: Tính tốc độ trung bình các request thành công (không có mã lỗi `5xx` như 500, 503...) trong vòng 2 phút qua (`[2m]`).
-  * Mẫu số: Tổng số request gửi đến ứng dụng trong vòng 2 phút qua.
-  * Sử dụng `or vector(1)` để trả về giá trị mặc định là `1` (100% thành công) nếu không có traffic nào, tránh lỗi chia cho 0 (`NaN`).
-* **Ngưỡng đánh giá (Success Condition)**: `result[0] >= 0.95` (Tỉ lệ thành công lớn hơn hoặc bằng **95%**).
-* **Cơ chế hoạt động**: Cứ mỗi 30 giây (`interval: 30s`), hệ thống sẽ chạy query trên. Nếu phát hiện success rate thấp hơn 95% quá 3 lần (`failureLimit: 3`), Rollout sẽ tự động **Abort** và rollback ngay lập tức về phiên bản ổn định trước đó.
+* **Success Condition**: `result[0] >= 0.95` (Success rate >= **95%**).
+* **Failure Limit**: `failureLimit: 3`. If the success rate drops below 95% more than 3 times, the rollout is automatically **Aborted** and rolled back to the stable replica.
 
-### 1.2. SLO Alerting Rule (`BackendHighErrorRate`)
-Cảnh báo này sẽ kích hoạt và gửi email khi tỷ lệ lỗi của ứng dụng `api` vượt quá ngưỡng quy định.
-
-* **Prometheus Query**:
+### 3.2. SLO Alerting Rule (`BackendHighErrorRate`)
+We define a Prometheus alerting rule to notify operators if the error rate of the API service exceeds the allowed error budget:
+* **Query**:
   ```promql
   (sum(increase(flask_http_request_total{namespace="demo", status=~"5.."}[1m])) or vector(0))
   /
   clamp_min((sum(increase(flask_http_request_total{namespace="demo"}[1m])) or vector(0)), 1)
   > 0.05
   ```
-* **Ý nghĩa query**:
-  * Tính tỉ lệ lỗi của ứng dụng trong cửa sổ trượt 1 phút (`[1m]`).
-  * `clamp_min(..., 1)` đảm bảo mẫu số tối thiểu là 1 để tránh lỗi chia cho 0.
-* **Ngưỡng cảnh báo (Threshold)**: `> 0.05` (Tỷ lệ lỗi lớn hơn **5%**).
-* **Thời gian duy trì (Duration)**: `for: 1m` (Tỉ lệ lỗi phải liên tục duy trì trên 5% trong vòng 1 phút thì mới kích hoạt Alert).
-* **Tích hợp Alertmanager**: Cảnh báo khi chuyển sang trạng thái `FIRING` sẽ được Alertmanager gửi trực tiếp tới email cấu hình (`dhoang1401@gmail.com`).
+* **Condition**: Triggers when the error rate is greater than **5%** (`> 0.05`) for a continuous period of **1 minute** (`for: 1m`).
+* **Alertmanager Action**: Sends email alerts directly to the target mailbox (`dhoang1401@gmail.com`).
 
 ---
 
-## 2. Hướng dẫn Lấy các File ảnh Minh chứng (Evidence Screenshots)
+## 4. Deployment Guide
 
-Dưới đây là danh sách chi tiết các hình ảnh bạn cần chụp để nộp bài:
+### Prerequisites
+* A running Kubernetes cluster (e.g., Minikube, Kind, or EKS)
+* `kubectl` CLI installed
+* ArgoCD installed in the cluster (`argocd` namespace)
 
-### Hình 1: Giao diện ArgoCD chính của Cụm (Trạng thái Synced và Healthy)
-* **Mục tiêu**: Chứng minh tất cả các ứng dụng (`root`, `web`, `api`, `argo-rollouts`, `kube-prometheus-stack`) đều đồng bộ sạch sẽ, không bị lệch cấu hình (no drift).
-* **Cách thực hiện**:
-  1. Mở trình duyệt truy cập vào dashboard Argo CD (qua port-forward cổng `8080`).
-  2. Chụp toàn màn hình trang quản lý ứng dụng, hiển thị rõ cả 5 ứng dụng đều có nhãn màu xanh lá: **Synced** và **Healthy**.
-* **Tên file gợi ý**: `01-argocd-synced-healthy.png`
+### Steps to Deploy
+1. **Apply the Root Application**:
+   Deploy the master application to sync all services:
+   ```bash
+   kubectl apply -f argocd/root.yaml
+   ```
+2. **Verify Application Syncing**:
+   ArgoCD will automatically instantiate all applications:
+   * `kube-prometheus-stack` (Monitoring)
+   * `argo-rollouts` (Canary controller)
+   * `web` (Morning frontend/backend)
+   * `api` (Afternoon API rollout)
 
-### Hình 2: Minh chứng Canary Auto-Abort (Tự động Rollback khi gặp lỗi)
-* **Mục tiêu**: Chứng minh hệ thống tự động phát hiện lỗi trên phiên bản Canary mới và tự động hủy rollout, trả về phiên bản ổn định cũ (`v2`).
-* **Cách thực hiện**:
-  1. Chạy lệnh sau trong terminal:
-     ```bash
-     kubectl describe rollout api -n demo
-     ```
-  2. Chụp lại phần log output ở terminal. Đặc biệt chú ý phần hiển thị:
-     * `Message: RolloutAborted: Rollout aborted update to revision X`
-     * `Metric "success-rate" assessed Failed due to failed (4) > failureLimit (3)`
-     * Danh sách lịch sử events chứng minh quá trình abort/rollback tự động.
-* **Tên file gợi ý**: `02-canary-auto-abort.png` (hoặc bạn có thể chụp giao diện Argo Rollouts Dashboard nếu có sử dụng plugin dashboard).
+3. **Check Resource Status**:
+   ```bash
+   kubectl get applications -n argocd
+   kubectl get rollouts -n demo
+   ```
 
-### Hình 3: Giao diện Prometheus Alerts (Trạng thái Firing)
-* **Mục tiêu**: Chứng minh Alert Rule `BackendHighErrorRate` hoạt động đúng và đã kích hoạt cảnh báo khi lỗi được inject.
-* **Cách thực hiện**:
-  1. Port-forward Prometheus Server (qua port-forward cổng `9090`).
-  2. Truy cập đường dẫn `http://localhost:9090/alerts`.
-  3. Tìm alert `BackendHighErrorRate` và chụp ảnh giao diện hiển thị alert này đang ở trạng thái màu đỏ/cam: **FIRING**.
-* **Tên file gợi ý**: `03-prometheus-alerts-firing.png`
+---
 
-### Hình 4: Email thông báo Cảnh báo từ Alertmanager
-* **Mục tiêu**: Chứng minh Alertmanager gửi email cảnh báo SLO thành công đến email cá nhân.
-* **Cách thực hiện**:
-  1. Mở hộp thư cá nhân (`dhoang1401@gmail.com`).
-  2. Tìm email có tiêu đề chứa `[FIRING]` hoặc `BackendHighErrorRate` gửi từ Alertmanager.
-  3. Chụp lại nội dung email hiển thị chi tiết cảnh báo.
-* **Tên file gợi ý**: `04-alert-email-notification.png`
+## 5. Verification & Evidence
+
+All validation screenshots confirming the success criteria are stored in the [evidence/](evidence/) directory and detailed in the [EVIDENCE.md](EVIDENCE.md) report.
+
+* **[EVIDENCE.md](EVIDENCE.md)**: Full verification checklist with screenshot references.
+* **[evidence/01-argocd-synced-healthy.png](evidence/01-argocd-synced-healthy.png)**: Proof of ArgoCD clean sync state.
+* **[evidence/02-canary-auto-abort-1.png](evidence/02-canary-auto-abort-1.png)**: Terminal description showing active rollback during a failed canary update.
+* **[evidence/12a-email-alert-received.png](evidence/12a-email-alert-received.png)**: Proof of email notifications received for the SLO breach.
