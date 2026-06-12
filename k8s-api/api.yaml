@@ -33,9 +33,9 @@ spec:
               containerPort: 8080
           env:
             - name: ERROR_RATE
-              value: "0"
+              value: "0.1"
             - name: VERSION
-              value: "v2"
+              value: "v3"
           readinessProbe:
             httpGet:
               path: /healthz
