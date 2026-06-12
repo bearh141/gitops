@@ -1,0 +1,180 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: backend-error-rate
+  namespace: demo
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  metrics:
+    - name: backend-error-rate
+      interval: 30s
+      count: 3
+      successCondition: result[0] < 0.05
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: http://kube-prometheus-stack-prometheus.monitoring.svc:9090
+          query: |
+            (sum(increase(gitops_demo_http_requests_total{namespace="demo",route="/api/order",status=~"5.."}[1m])) or vector(0))
+            /
+            clamp_min((sum(increase(gitops_demo_http_requests_total{namespace="demo",route="/api/order"}[1m])) or vector(0)), 1)
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: backend-slo-alerts
+  namespace: demo
+  labels:
+    release: kube-prometheus-stack
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  groups:
+    - name: backend-slo
+      rules:
+        - alert: BackendHighErrorRate
+          expr: |
+            (
+              (sum(increase(gitops_demo_http_requests_total{namespace="demo",route="/api/order",status=~"5.."}[1m])) or vector(0))
+              /
+              clamp_min((sum(increase(gitops_demo_http_requests_total{namespace="demo",route="/api/order"}[1m])) or vector(0)), 1)
+            ) > 0.05
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Backend error rate is above SLO"
+            description: "More than 5% of /api/order requests are failing in the demo backend."
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: backend
+  namespace: demo
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  replicas: 2
+  strategy:
+    canary:
+      steps:
+        - setWeight: 25
+        - analysis:
+            templates:
+              - templateName: backend-error-rate
+        - setWeight: 50
+        - analysis:
+            templates:
+              - templateName: backend-error-rate
+        - setWeight: 100
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend
+          image: gitops-backend:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          env:
+            - name: VERSION
+              value: "v1.8.0"
+            - name: ERROR_RATE
+              value: "0"
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: demo
+  labels:
+    app: backend
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  selector:
+    app: backend
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: frontend
+  namespace: demo
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  replicas: 2
+  strategy:
+    canary:
+      steps:
+        - setWeight: 25
+        - pause: {}
+        - setWeight: 50
+        - pause: { duration: 60s }
+        - setWeight: 100
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: gitops-frontend:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: demo
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  selector:
+    app: frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: backend
+  namespace: demo
+  labels:
+    release: kube-prometheus-stack
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  namespaceSelector:
+    matchNames:
+      - demo
+  selector:
+    matchLabels:
+      app: backend
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
